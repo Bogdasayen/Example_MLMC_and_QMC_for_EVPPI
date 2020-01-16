@@ -1,0 +1,603 @@
+---
+title: "EVPPI_Bristol"
+author: "Wei Fang"
+date: "12/03/2017"
+output: pdf_document
+---
+
+This is an R Markdown document which contains all the codes and results of all the EVPI and EVPPI for the EVPPI project in University of Bristol. Due to some update issues in the MLMC package, we currently use the functions in the package but with some modifications on codes.
+
+The following four package are needed for MLMC functions:
+```{r message=FALSE}
+require(parallel)
+require(ggplot2)
+require(grid)
+require(Rcpp)
+```
+The following R code are for MLMC test can calculation. The first three come from the MLMC pacakge in R (see: <https://cran.r-project.org/web/packages/mlmc/index.html>) with some new updates by Wei.
+```{r message=FALSE }
+source("mlmc.R") #MLMC code to calculate the value to some accuracy
+source("mlmc.test.R") #test function of the convergence rates and output the MLMC results
+source("plot.mlmc.test.R") #function to plot the result
+source("multiplot.R") #this is the function from ggplot
+```
+
+The following five R code are developed by Wei to calculate different EVPI and EVPPI with $N$ out samples and $M^l$ inner samples. These can be called by **mlmc.R** to do MLMC calculations.
+```{r message=FALSE }
+source("EVPI_l.R")
+source("EVPPI_P_l.R")
+source("EVPPI_cq_l.R")
+source("EVPPI_lor1_l.R")
+source("EVPPI_lor2_l.R")
+```
+
+# # EVPI
+Suppose that the perfect information is available. That means by density $\rho_Z$ we can generate samples of $Z$ and for each sample $Z^{(n)}$ we can find the optimal decision $d$ for that specific decision. Therefore the expected value of perfect information (EVPI) is 
+$$\text{EVPI}= \mathbb{E}_Z\left[\max_{d\in D} f_d(Z)\right]-\max_{d\in D} \mathbb{E}_Z\left[f_d(Z)\right].$$
+and the Monte Carlo estimator on each level $l$ with $M^l$ inner sample is
+$$\overline{\text{EVPI}}_l = \frac{1}{M^l}\sum_{m=1}^{M^l} \max_{d\in D} f_d(Z^{(m)})-\max_{d\in D} \frac{1}{M^l}\sum_{m=1}^{M^l} f_d(Z^{(m)})$$
+and MLMC estimator on each level $l$ is
+$$\overline{\text{EVPI}}_l-\frac{1}{2}\left(\overline{\text{EVPI}}_{l-1}^1+\overline{\text{EVPI}}_{l-1}^2\right)$$
+where the $\overline{\text{EVPI}}_{l-1}^1$ uses the first $M^{l-1}$ samples and $\overline{\text{EVPI}}_{l-1}^2$ uses the second $M^{l-1}$ samples.
+
+Here is the code for **EVPI_l.R** which requre `Matrix`, `MASS` and `boot` packages. This function calculate $N$ samples of the MLMC estimator on level $l$ shown above.
+```{r eval=FALSE} 
+EVPI_l <- function(l, N) {
+    require(Matrix)
+    require(MASS) # mvrnorm 
+    require(boot) # logit, inv.logit
+    
+    # define the cost and lambda
+    lamda <- 20000
+    C_t1 <- 300
+    C_t2 <- 30
+    
+    # calculate the number of inner samples
+    M <- 2^(l+1)
+  
+    # define the mean and covariance matrix 
+    mu_rec <- c(0.99,1.33)
+    sigma_rec <- matrix(c(0.22,0.15,0.15,0.20),2,2,byrow = TRUE)
+    mu_rel <- c(-1.48,-0.4)
+    sigma_rel <- matrix(c(0.14,0.05,0.05,0.11),2,2,byrow = TRUE)
+    
+    # sum1 record the relavent statistics
+    sum1 <- rep(0, 7)
+    
+    for(N1 in seq(1, N, by=10000)) {
+      N2 <- min(10000, N-N1+1)
+      
+      # Sample all the random variables and tranform to M*N2 matrix
+      P_nt_rec <- matrix(rbeta(M*N2,6,200),M,N2,byrow = TRUE)
+      P_nt_rel <- matrix(rbeta(M*N2,2,100),M,N2,byrow = TRUE)
+      
+      lor_rec <- mvrnorm(M*N2, mu_rec, sigma_rec)
+      lor_rel <- mvrnorm(M*N2, mu_rel, sigma_rel)
+      
+      lor_t1_rec <- matrix(lor_rec[,1],M,N2,byrow = TRUE)
+      lor_t1_rel <- matrix(lor_rel[,1],M,N2,byrow = TRUE)
+      P_t1_rec <- inv.logit(logit(P_nt_rec)+lor_t1_rec)
+      P_t1_rel <- inv.logit(logit(P_nt_rel)+lor_t1_rel)
+      
+      lor_t2_rec <- matrix(lor_rec[,2],M,N2,byrow = TRUE)
+      lor_t2_rel <- matrix(lor_rel[,2],M,N2,byrow = TRUE)
+      P_t2_rec <- inv.logit(logit(P_nt_rec)+lor_t2_rec)
+      P_t2_rel <- inv.logit(logit(P_nt_rel)+lor_t2_rel)
+      
+      C_rec = matrix(rnorm(M*N2,1000,50),M,N2,byrow = TRUE)
+      C_rel = matrix(rnorm(M*N2,2000,100),M,N2,byrow = TRUE)
+      C_no_rec = matrix(rnorm(M*N2,2500,125),M,N2,byrow = TRUE)
+      
+      Q_rec = matrix(rnorm(M*N2,26,2),M,N2,byrow = TRUE)
+      Q_rel = matrix(rnorm(M*N2,23,3),M,N2,byrow = TRUE)
+      Q_no_rec = matrix(rnorm(M*N2,20,4),M,N2,byrow = TRUE)
+      
+      # calculate the net benefits
+      NB_nt = (lamda*(P_nt_rec*(1-P_nt_rel)*Q_rec + P_nt_rec*P_nt_rel*Q_rel
+                     +(1-P_nt_rec)*Q_no_rec)
+      - (P_nt_rec*(1-P_nt_rel)*C_rec + P_nt_rec*P_nt_rel*C_rel
+         +(1-P_nt_rec)*C_no_rec ))
+      NB_t1 = (lamda*(P_t1_rec*(1-P_t1_rel)*Q_rec + P_t1_rec*P_t1_rel*Q_rel
+                     +(1-P_t1_rec)*Q_no_rec)
+      - (C_t1 + P_t1_rec*(1-P_t1_rel)*C_rec + P_t1_rec*P_t1_rel*C_rel
+         +(1-P_t1_rec)*C_no_rec ))
+      NB_t2 = (lamda*(P_t2_rec*(1-P_t2_rel)*Q_rec + P_t2_rec*P_t2_rel*Q_rel
+                     +(1-P_t2_rec)*Q_no_rec)
+      - (C_t2 + P_t2_rec*(1-P_t2_rel)*C_rec + P_t2_rec*P_t2_rel*C_rel
+         +(1-P_t2_rec)*C_no_rec ))
+      
+      # calculate the fine level and coarse level estimators
+      Pb = colMeans(pmax(pmax(NB_nt,NB_t1),NB_t2))
+      Pf = Pb-pmax(pmax(colMeans(NB_nt), colMeans(NB_t1)), colMeans(NB_t2))
+      if(M==2)
+      {
+        Pc = Pb-0.5*(pmax(pmax(NB_nt[1,], NB_t1[1,]),NB_t2[1,])
+                     +pmax(pmax(NB_nt[2,], NB_t1[2,]), NB_t2[2,]))
+        
+      } else {
+      Pc = Pb-0.5*(pmax(pmax(colMeans(NB_nt[1:(M/2),]), 
+                   colMeans(NB_t1[1:(M/2),])),colMeans(NB_t2[1:(M/2),]))
+                   +pmax(pmax(colMeans(NB_nt[((M/2)+1):M,]),
+            colMeans(NB_t1[((M/2)+1):M,])), colMeans(NB_t2[((M/2)+1):M,])))
+      }
+      
+      # update the statistics
+      sum1[1] = sum1[1] + sum(Pf-Pc);
+      sum1[2] = sum1[2] + sum((Pf-Pc)^2);
+      sum1[3] = sum1[3] + sum((Pf-Pc)^3);
+      sum1[4] = sum1[4] + sum((Pf-Pc)^4);
+      sum1[5] = sum1[5] + sum(Pf);
+      sum1[6] = sum1[6] + sum(Pf^2);
+      sum1[7] = sum1[7] + M*N2;
+    }
+    return(sum1)
+}
+```
+Note that N1 and N2 in this function are the trick of splitting the outer samples into a suitable size N2=10000 to achieve the best computational performance. If we only call the level function (e.g. EVPI_l( l, N )), then the number of outer samples is N. Both N1 and N2 are introduced to get the best efficiency of the matrix computation. That means, instead of computing the N out samples one by one, we compute N2 samples each time by using matrix computation. N2=10000 is the optimal size for matrix computation due to the tradeoff between the memory and speed. Then we need to do this calculation several times and N1 denote 1+the number of samples you have calculated. Therefore, if we want to compute EVPI(l,33000), we will do the for loop four times (N1=1, N2=10000), (N1=10001, N2=10000), (N1=20001, N2=10000) and (N1=30001, N2 = 3000). In the last iteration, N2=3000 because we only need to calculate that number of the samples, which is ensured by the first line in the for loop. We also do some experiment on it by only changing the value of N2 range from $10$ to $10^6$ to do the mlmc.test function with the accuracy $1$ and recording the running time. Here is the result:
+
+```{r echo=FALSE,message=FALSE}
+require(knitr)
+mydata<- matrix(c(10,10^2,10^3,10^4,10^5,10^6,142.812,33.334,23.683,23.560,24.198,30.394),6,2)
+kable(mydata,format='pandoc' ,col.names=c('N2 ','Time (s)'))
+```
+   
+From these results, we can see that N2=10^4 is the best. 
+
+The following **mlmc.test** function test the EVPI value with $M^l$ inner samples for each level. **N** is the number of the out samples for convergence test. **L** is the max level for convergence test. **N_0** is the initial number of out samples for MLMC caculation which should be larger than the kurtosis to ensure the correct estimation of the variance. **eps.v** is the accuracy you want to achieve. You can test different accuracy using vector. **Lmin** and **Lmax** is the min and max number of levels used in MLMC. **parallel** is for parallel computing which is a integer.
+```{r message=FALSE }
+set.seed(666) # Set random seed to ensure the same output 
+# without this MLMC will give different output each time
+tst <- mlmc.test(EVPI_l, M=2, N=10000,
+                 L=4, N0=10000,
+                 eps.v=c(0.5,1,2,5),
+                 Lmin=2, Lmax=10, parallel = 32)
+EVPI = tst$P[1]
+plot(tst,which=c("var", "mean", "Nl", "cost"),cols=2) # plot
+```
+
+The estimation of EVPI is `r tst$P[1]` with root Mean Square Error `r tst$eps.v[1]`.
+
+
+# # EVPPI 
+Assume that the unknown parameters can be decomposed into two random variables as $Z=\left(X, Y \right)$ with $\Omega = \Omega_{X}\times \Omega_{Y}$ and only information of $X$ is available. That means we can generate samples of $X$ first and for each sample $X^{(n)},$ we can calculate the maximum of the conditional expectation of $Y$ based on $X^{(n)}.$ Therefore the expected value of partial perfect information (the value of $X$) is
+$$\text{EVPPI}= \mathbb{E}_X\left[\max_{d\in D} \mathbb{E}_{Y|X} \left[f_d(X,Y)\right] \right] - \max_{d\in D} \mathbb{E}_Z\left[f_d(Z)\right]$$
+So the conditional distribution of $Y$ based on $X$ is important and available.
+In MLMC, instead of directly estimating the EVPPI, we estimate the EVPI-EVPPI:
+$$\text{DIFF}= \mathbb{E}_Z\left[\max_{d\in D} f_d(Z)\right]-\mathbb{E}_X\left[\max_{d\in D} \mathbb{E}_{Y|X} \left[f_d(X,Y)\right] \right] $$
+and the Monte Carlo estimator on each level $l$ with $M^l$ inner sample based on $X^{(n)}$ is
+$$\overline{\text{DIFF}}_l = \frac{1}{M^l}\sum_{m=1}^{M^l} \max_{d\in D} f_d(X^{(n)},Y^{(n,m)})-\max_{d\in D} \frac{1}{M^l}\sum_{m=1}^{M^l} f_d(X^{(n)},Y^{(n,m)})$$
+and MLMC estimator on each level $l$ is
+$$\overline{\text{DIFF}}_l-\frac{1}{2}\left(\overline{\text{DIFF}}_{l-1}^1+\overline{\text{DIFF}}_{l-1}^2\right)$$
+where the $\overline{\text{DIFF}}_{l-1}^1$ uses the first $M^{l-1}$ samples and $\overline{\text{DIFF}}_{l-1}^2$ uses the second $M^{l-1}$ samples.
+
+# # EVPPI for P
+Here is the code for **EVPPI_P_l.R** which requre `Matrix`, `MASS` and `boot` packages:
+```{r eval=FALSE} 
+EVPPI_P_l <- function(l, N) {
+  require(Matrix)
+  require(MASS) # mvrnorm
+  require(boot) # logit
+  
+  lamda <- 20000
+  C_t1 <- 300
+  C_t2 <- 30
+  M <- 2^(l+1)
+  
+  mu_rec <- c(0.99,1.33)
+  sigma_rec <- matrix(c(0.22,0.15,0.15,0.20),2,2,byrow = TRUE)
+  mu_rel <- c(-1.48,-0.4)
+  sigma_rel <- matrix(c(0.14,0.05,0.05,0.11),2,2,byrow = TRUE)
+  
+  sum1 <- rep(0, 7)
+  
+  for(N1 in seq(1, N, by=10000)) {
+    N2 <- min(10000, N-N1+1)
+    
+    P_nt_rec <- matrix(rep(rbeta(N2,6,200),M),M,N2,byrow = TRUE)
+    P_nt_rel <- matrix(rep(rbeta(N2,2,100),M),M,N2,byrow = TRUE)
+    
+    lor_rec <- mvrnorm(N2, mu_rec, sigma_rec)
+    lor_rel <- mvrnorm(N2, mu_rel, sigma_rel)
+    
+    # Generate N2 samples of P and repeat it to M*N2 matrix
+    lor_t1_rec <- matrix(rep(lor_rec[,1],M),M,N2,byrow = TRUE)
+    lor_t1_rel <- matrix(rep(lor_rel[,1],M),M,N2,byrow = TRUE)
+    P_t1_rec <- inv.logit(logit(P_nt_rec)+lor_t1_rec)
+    P_t1_rel <- inv.logit(logit(P_nt_rel)+lor_t1_rel)
+    
+    lor_t2_rec <- matrix(rep(lor_rec[,2],M),M,N2,byrow = TRUE)
+    lor_t2_rel <- matrix(rep(lor_rel[,2],M),M,N2,byrow = TRUE)
+    P_t2_rec <- inv.logit(logit(P_nt_rec)+lor_t2_rec)
+    P_t2_rel <- inv.logit(logit(P_nt_rel)+lor_t2_rel)
+    
+    C_rec = matrix(rnorm(M*N2,1000,50),M,N2,byrow = TRUE)
+    C_rel = matrix(rnorm(M*N2,2000,100),M,N2,byrow = TRUE)
+    C_no_rec = matrix(rnorm(M*N2,2500,125),M,N2,byrow = TRUE)
+    
+    Q_rec = matrix(rnorm(M*N2,26,2),M,N2,byrow = TRUE)
+    Q_rel = matrix(rnorm(M*N2,23,3),M,N2,byrow = TRUE)
+    Q_no_rec = matrix(rnorm(M*N2,20,4),M,N2,byrow = TRUE)
+    
+    NB_nt = (lamda*(P_nt_rec*(1-P_nt_rel)*Q_rec + P_nt_rec*P_nt_rel*Q_rel
+                   +(1-P_nt_rec)*Q_no_rec)
+    - (P_nt_rec*(1-P_nt_rel)*C_rec + P_nt_rec*P_nt_rel*C_rel
+       +(1-P_nt_rec)*C_no_rec ))
+    NB_t1 = (lamda*(P_t1_rec*(1-P_t1_rel)*Q_rec + P_t1_rec*P_t1_rel*Q_rel
+                   +(1-P_t1_rec)*Q_no_rec)
+    - (C_t1 + P_t1_rec*(1-P_t1_rel)*C_rec + P_t1_rec*P_t1_rel*C_rel
+       +(1-P_t1_rec)*C_no_rec ))
+    NB_t2 = (lamda*(P_t2_rec*(1-P_t2_rel)*Q_rec + P_t2_rec*P_t2_rel*Q_rel
+                   +(1-P_t2_rec)*Q_no_rec)
+    - (C_t2 + P_t2_rec*(1-P_t2_rel)*C_rec + P_t2_rec*P_t2_rel*C_rel
+       +(1-P_t2_rec)*C_no_rec ))
+    
+    Pb = colMeans(pmax(pmax(NB_nt,NB_t1),NB_t2))
+    Pf = Pb-pmax(pmax(colMeans(NB_nt), colMeans(NB_t1)), colMeans(NB_t2))
+    if(M==2)
+    {
+      Pc = Pb-0.5*(pmax(pmax(NB_nt[1,], NB_t1[1,]),NB_t2[1,])
+                   +pmax(pmax(NB_nt[2,], NB_t1[2,]), NB_t2[2,]))
+      
+    } else {
+      Pc = Pb-0.5*(pmax(pmax(colMeans(NB_nt[1:(M/2),]), 
+                  colMeans(NB_t1[1:(M/2),])),colMeans(NB_t2[1:(M/2),]))
+                 +pmax(pmax(colMeans(NB_nt[((M/2)+1):M,]), 
+          colMeans(NB_t1[((M/2)+1):M,])), colMeans(NB_t2[((M/2)+1):M,])))
+    }
+    sum1[1] = sum1[1] + sum(Pf-Pc);
+    sum1[2] = sum1[2] + sum((Pf-Pc)^2);
+    sum1[3] = sum1[3] + sum((Pf-Pc)^3);
+    sum1[4] = sum1[4] + sum((Pf-Pc)^4);
+    sum1[5] = sum1[5] + sum(Pf);
+    sum1[6] = sum1[6] + sum(Pf^2);
+    sum1[7] = sum1[7] + M*N2;
+  }
+  return(sum1)
+}
+```
+We can use the MLMC to calculate the value:
+```{r message=FALSE }
+set.seed(666) # Set random seed to ensure the same output 
+# without this MLMC will give different output each time
+tst <- mlmc.test(EVPPI_P_l, M=2, N=10000,
+                 L=4, N0=10000,
+                 eps.v=c(0.5,1,2,5),
+                 Lmin=2, Lmax=10, parallel = 32)
+plot(tst,which=c("var", "mean", "Nl", "cost"),cols=2) # plot
+```
+
+The estimation of EVPPI for P is `r EVPI-tst$P[1]` with root Mean Square Error `r 2*tst$eps.v[1]`.
+
+# # EVPPI for cq
+Here is the code for **EVPPI_cq_l.R** which requre `Matrix`, `MASS` and `boot` packages:
+```{r eval=FALSE} 
+EVPPI_cq_l <- function(l, N) {
+  require(Matrix)
+  require(MASS) # mvrnorm
+  require(boot) # logit
+  
+  lamda <- 20000
+  C_t1 <- 300
+  C_t2 <- 30
+  M <- 2^(l+1)
+  
+  mu_rec <- c(0.99,1.33)
+  sigma_rec <- matrix(c(0.22,0.15,0.15,0.20),2,2,byrow = TRUE)
+  mu_rel <- c(-1.48,-0.4)
+  sigma_rel <- matrix(c(0.14,0.05,0.05,0.11),2,2,byrow = TRUE)
+  
+  sum1 <- rep(0, 7)
+  
+  for(N1 in seq(1, N, by=10000)) {
+    N2 <- min(10000, N-N1+1)
+    
+    P_nt_rec <- matrix(rbeta(M*N2,6,200),M,N2,byrow = TRUE)
+    P_nt_rel <- matrix(rbeta(M*N2,2,100),M,N2,byrow = TRUE)
+    
+    lor_rec <- mvrnorm(M*N2, mu_rec, sigma_rec)
+    lor_rel <- mvrnorm(M*N2, mu_rel, sigma_rel)
+    
+    lor_t1_rec <- matrix(lor_rec[,1],M,N2,byrow = TRUE)
+    lor_t1_rel <- matrix(lor_rel[,1],M,N2,byrow = TRUE)
+    P_t1_rec <- inv.logit(logit(P_nt_rec)+lor_t1_rec)
+    P_t1_rel <- inv.logit(logit(P_nt_rel)+lor_t1_rel)
+    
+    lor_t2_rec <- matrix(lor_rec[,2],M,N2,byrow = TRUE)
+    lor_t2_rel <- matrix(lor_rel[,2],M,N2,byrow = TRUE)
+    P_t2_rec <- inv.logit(logit(P_nt_rec)+lor_t2_rec)
+    P_t2_rel <- inv.logit(logit(P_nt_rel)+lor_t2_rel)
+    
+      # Generate N2 samples of C Q and repeat it to M*N2 matrix
+    C_rec = matrix(rep(rnorm(N2,1000,50),M),M,N2,byrow = TRUE)
+    C_rel = matrix(rep(rnorm(N2,2000,100),M),M,N2,byrow = TRUE)
+    C_no_rec = matrix(rep(rnorm(N2,2500,125),M),M,N2,byrow = TRUE)
+    
+    Q_rec = matrix(rep(rnorm(N2,26,2),M),M,N2,byrow = TRUE)
+    Q_rel = matrix(rep(rnorm(N2,23,3),M),M,N2,byrow = TRUE)
+    Q_no_rec = matrix(rep(rnorm(N2,20,4),M),M,N2,byrow = TRUE)
+    
+    NB_nt = (lamda*(P_nt_rec*(1-P_nt_rel)*Q_rec + P_nt_rec*P_nt_rel*Q_rel
+                   +(1-P_nt_rec)*Q_no_rec)
+    - (P_nt_rec*(1-P_nt_rel)*C_rec + P_nt_rec*P_nt_rel*C_rel
+       +(1-P_nt_rec)*C_no_rec ))
+    NB_t1 = (lamda*(P_t1_rec*(1-P_t1_rel)*Q_rec + P_t1_rec*P_t1_rel*Q_rel
+                   +(1-P_t1_rec)*Q_no_rec)
+    - (C_t1 + P_t1_rec*(1-P_t1_rel)*C_rec + P_t1_rec*P_t1_rel*C_rel
+       +(1-P_t1_rec)*C_no_rec ))
+    NB_t2 = (lamda*(P_t2_rec*(1-P_t2_rel)*Q_rec + P_t2_rec*P_t2_rel*Q_rel
+                   +(1-P_t2_rec)*Q_no_rec)
+    - (C_t2 + P_t2_rec*(1-P_t2_rel)*C_rec + P_t2_rec*P_t2_rel*C_rel
+       +(1-P_t2_rec)*C_no_rec ))
+    
+    Pb = colMeans(pmax(pmax(NB_nt,NB_t1),NB_t2))
+    Pf = Pb-pmax(pmax(colMeans(NB_nt), colMeans(NB_t1)), colMeans(NB_t2))
+    if(M==2)
+    {
+      Pc = Pb-0.5*(pmax(pmax(NB_nt[1,], NB_t1[1,]),NB_t2[1,])
+                   +pmax(pmax(NB_nt[2,], NB_t1[2,]), NB_t2[2,]))
+      
+    } else {
+      Pc = Pb-0.5*(pmax(pmax(colMeans(NB_nt[1:(M/2),]), 
+                    colMeans(NB_t1[1:(M/2),])),colMeans(NB_t2[1:(M/2),]))
+                  +pmax(pmax(colMeans(NB_nt[((M/2)+1):M,]),
+           colMeans(NB_t1[((M/2)+1):M,])), colMeans(NB_t2[((M/2)+1):M,])))
+    }
+    sum1[1] = sum1[1] + sum(Pf-Pc);
+    sum1[2] = sum1[2] + sum((Pf-Pc)^2);
+    sum1[3] = sum1[3] + sum((Pf-Pc)^3);
+    sum1[4] = sum1[4] + sum((Pf-Pc)^4);
+    sum1[5] = sum1[5] + sum(Pf);
+    sum1[6] = sum1[6] + sum(Pf^2);
+    sum1[7] = sum1[7] + M*N2;
+  }
+  return(sum1)
+}
+```
+We can use the MLMC to calculate the value:
+```{r message=FALSE }
+set.seed(666) # Set random seed to ensure the same output 
+# without this MLMC will give different output each time
+tst <- mlmc.test(EVPPI_cq_l, M=2, N=10000,
+                 L=4, N0=10000,
+                 eps.v=c(0.5,1,2,5),
+                 Lmin=2, Lmax=10, parallel = 32)
+plot(tst,which=c("var", "mean", "Nl", "cost"),cols=2) # plot
+```
+
+The estimation of EVPPI for C and Q is `r EVPI-tst$P[1]` with root Mean Square Error `r 2*tst$eps.v[1]`.
+
+# # EVPPI for lor of CBT
+Here is the code for **EVPPI_lor1_l.R** which requre `Matrix`, `MASS` and `boot` packages:
+```{r eval=FALSE} 
+EVPPI_lor1_l <- function(l, N) {
+  require(Matrix) # matrix computation
+  require(MASS) # multivariate normal generator
+  require(boot) # logit function
+  
+  # some constants and parameters in the model
+  lamda <- 20000
+  C_t1 <- 300
+  C_t2 <- 30
+  mu_rec <- c(0.99,1.33) # lor2
+  sigma_rec <- matrix(c(0.22,0.15,0.15,0.20),2,2,byrow = TRUE)
+  mu_rel <- c(-1.48,-0.4) #lor3
+  sigma_rel <- matrix(c(0.14,0.05,0.05,0.11),2,2,byrow = TRUE)
+  
+  M <- 2^(l+1) # number of inner samples
+  sum1 <- rep(0, 7)
+  
+  for(N1 in seq(1, N, by=10000)) {
+    # generate N2 samples together for better computational efficiency
+    N2 <- min(10000, N-N1+1) 
+    
+    # Generate M*N2 samples of Probability of no treatment
+    P_nt_rec <- matrix(rbeta(M*N2,6,200),M,N2,byrow = TRUE)
+    P_nt_rel <- matrix(rbeta(M*N2,2,100),M,N2,byrow = TRUE)
+     
+    # Generate N2 samples of lor_2 and repeat it to M*N2 matrix
+    lor_rec <- mvrnorm(N2, mu_rec, sigma_rec)
+    lor_rel <- mvrnorm(N2, mu_rel, sigma_rel)
+    lor_t1_rec <- matrix(rep(lor_rec[,1],M),M,N2,byrow = TRUE)
+    lor_t1_rel <- matrix(rep(lor_rel[,1],M),M,N2,byrow = TRUE)
+    P_t1_rec <- inv.logit(logit(P_nt_rec)+lor_t1_rec)
+    P_t1_rel <- inv.logit(logit(P_nt_rel)+lor_t1_rel)
+    
+    # calculate the conditional normal distribution of the lor_t2 based on N2 samples of lor_t1
+    mu_t2_rec = (lor_t1_rec-mu_rec[1])*sigma_rec[1,2]/sigma_rec[1,1]+mu_rec[2];
+    mu_t2_rel = (lor_t1_rel-mu_rel[1])*sigma_rel[1,2]/sigma_rel[1,1]+mu_rel[2];
+    sigma_t2_rec = sqrt(sigma_rec[2,2]-sigma_rec[1,2]^2/sigma_rec[1,1]);
+    sigma_t2_rel = sqrt(sigma_rel[2,2]-sigma_rel[1,2]^2/sigma_rel[1,1]);
+  # Generate M*N2 samples of lor_t2 conditioned on lor_t1 and repeat it to M*N2 matrix
+    lor_t2_rec = mu_t2_rec + sigma_t2_rec*matrix(rnorm(M*N2,0,1),M,N2,byrow=TRUE);
+    lor_t2_rel = mu_t2_rel + sigma_t2_rel*matrix(rnorm(M*N2,0,1),M,N2,byrow=TRUE);
+    P_t2_rec = inv.logit(logit(P_nt_rec)+lor_t2_rec);
+    P_t2_rel = inv.logit(logit(P_nt_rel)+lor_t2_rel);
+    
+    # generate M*N2 independent inner samples 
+    C_rec = matrix(rnorm(M*N2,1000,50),M,N2,byrow = TRUE)
+    C_rel = matrix(rnorm(M*N2,2000,100),M,N2,byrow = TRUE)
+    C_no_rec = matrix(rnorm(M*N2,2500,125),M,N2,byrow = TRUE)
+    
+    Q_rec = matrix(rnorm(M*N2,26,2),M,N2,byrow = TRUE)
+    Q_rel = matrix(rnorm(M*N2,23,3),M,N2,byrow = TRUE)
+    Q_no_rec = matrix(rnorm(M*N2,20,4),M,N2,byrow = TRUE)
+    
+    # calculate the NB value for all 3 treatments of all samples using formula (5.1)
+    NB_nt = (lamda*(P_nt_rec*(1-P_nt_rel)*Q_rec + P_nt_rec*P_nt_rel*Q_rel
+                   +(1-P_nt_rec)*Q_no_rec)
+    - (P_nt_rec*(1-P_nt_rel)*C_rec + P_nt_rec*P_nt_rel*C_rel
+       +(1-P_nt_rec)*C_no_rec ))
+    NB_t1 = (lamda*(P_t1_rec*(1-P_t1_rel)*Q_rec + P_t1_rec*P_t1_rel*Q_rel
+                   +(1-P_t1_rec)*Q_no_rec)
+    - (C_t1 + P_t1_rec*(1-P_t1_rel)*C_rec + P_t1_rec*P_t1_rel*C_rel
+       +(1-P_t1_rec)*C_no_rec ))
+    NB_t2 = (lamda*(P_t2_rec*(1-P_t2_rel)*Q_rec + P_t2_rec*P_t2_rel*Q_rel
+                   +(1-P_t2_rec)*Q_no_rec)
+    - (C_t2 + P_t2_rec*(1-P_t2_rel)*C_rec + P_t2_rec*P_t2_rel*C_rel
+       +(1-P_t2_rec)*C_no_rec ))
+    
+    # the first term in estimator (9.1)
+    Pb = colMeans(pmax(pmax(NB_nt,NB_t1),NB_t2))
+    
+    # DIFF estimator (9.1) with M inner samples for level l
+    Pf = Pb-pmax(pmax(colMeans(NB_nt), colMeans(NB_t1)), colMeans(NB_t2))
+    
+    # Average of two DIFF estimator with M/2 inner samples for level l-1
+    if(M==2)
+    {
+      Pc = Pb-0.5*(pmax(pmax(NB_nt[1,], NB_t1[1,]),NB_t2[1,])
+                   +pmax(pmax(NB_nt[2,], NB_t1[2,]), NB_t2[2,]))
+      
+    } else {
+      Pc = Pb-0.5*(pmax(pmax(colMeans(NB_nt[1:(M/2),]), 
+                      colMeans(NB_t1[1:(M/2),])),colMeans(NB_t2[1:(M/2),]))
+                   +pmax(pmax(colMeans(NB_nt[((M/2)+1):M,]), 
+                colMeans(NB_t1[((M/2)+1):M,])), colMeans(NB_t2[((M/2)+1):M,])))
+    }
+    
+    # update all the statistics needed by MLMC
+    sum1[1] = sum1[1] + sum(Pf-Pc);
+    sum1[2] = sum1[2] + sum((Pf-Pc)^2);
+    sum1[3] = sum1[3] + sum((Pf-Pc)^3);
+    sum1[4] = sum1[4] + sum((Pf-Pc)^4);
+    sum1[5] = sum1[5] + sum(Pf);
+    sum1[6] = sum1[6] + sum(Pf^2);
+    sum1[7] = sum1[7] + M*N2;
+  }
+  return(sum1) # return statistics
+}
+```
+
+We can use the MLMC to calculate the value:
+```{r message=FALSE }
+set.seed(666) # Set random seed to ensure the same output 
+# without this MLMC will give different output each time
+tst <- mlmc.test(EVPPI_lor1_l, M=2, N=10000,
+                 L=4, N0=10000,
+                 eps.v=c(0.5,1,2,5),
+                 Lmin=2, Lmax=10, parallel = 32)
+plot(tst,which=c("var", "mean", "Nl", "cost"),cols=2) # plot
+```
+
+The estimation of EVPPI for lor of CBT is `r EVPI-tst$P[1]` with root Mean Square Error `r 2*tst$eps.v[1]`.
+
+# # EVPPI for lor of antidepression
+Here is the code for **EVPPI_lor2_l.R** which requre `Matrix`, `MASS` and `boot` packages:
+```{r eval=FALSE} 
+EVPPI_lor1_l <- function(l, N) {
+  require(Matrix)
+  require(MASS) # mvrnorm
+  require(boot) # logit
+  
+  lamda <- 20000
+  C_t1 <- 300
+  C_t2 <- 30
+  M <- 2^(l+1)
+  
+  mu_rec <- c(0.99,1.33)
+  sigma_rec <- matrix(c(0.22,0.15,0.15,0.20),2,2,byrow = TRUE)
+  mu_rel <- c(-1.48,-0.4)
+  sigma_rel <- matrix(c(0.14,0.05,0.05,0.11),2,2,byrow = TRUE)
+  
+  sum1 <- rep(0, 7)
+  
+  for(N1 in seq(1, N, by=10000)) {
+    N2 <- min(10000, N-N1+1)
+    
+    P_nt_rec <- matrix(rbeta(M*N2,6,200),M,N2,byrow = TRUE)
+    P_nt_rel <- matrix(rbeta(M*N2,2,100),M,N2,byrow = TRUE)
+    
+    lor_rec <- mvrnorm(N2, mu_rec, sigma_rec)
+    lor_rel <- mvrnorm(N2, mu_rel, sigma_rel)
+    
+    # Generate N2 samples of lor_t2 and repeat it to M*N2 matrix
+    lor_t2_rec <- matrix(rep(lor_rec[,2],M),M,N2,byrow = TRUE)
+    lor_t2_rel <- matrix(rep(lor_rel[,2],M),M,N2,byrow = TRUE)
+    P_t2_rec <- inv.logit(logit(P_nt_rec)+lor_t2_rec)
+    P_t2_rel <- inv.logit(logit(P_nt_rel)+lor_t2_rel)
+
+    # calculate the conditional normal distribution of the lor_t1 based on N2 samples of lor_t2
+    mu_t1_rec = (lor_t2_rec-mu_rec[2])*sigma_rec[1,2]/sigma_rec[2,2]+mu_rec[1];
+    mu_t1_rel = (lor_t2_rel-mu_rel[2])*sigma_rel[1,2]/sigma_rec[2,2]+mu_rel[1];
+    sigma_t1_rec = sqrt(sigma_rec[1,1]-sigma_rec[1,2]^2/sigma_rec[2,2]);
+    sigma_t1_rel = sqrt(sigma_rel[1,1]-sigma_rel[1,2]^2/sigma_rel[2,2]);
+
+    # Generate M*N2 samples of lor_t2 conditioned on lor_t1 and repeat it to M*N2 matrix
+    lor_t1_rec = mu_t1_rec + sigma_t1_rec*matrix(rnorm(M*N2,0,1),M,N2,byrow=TRUE);
+    lor_t1_rel = mu_t1_rel + sigma_t1_rel*matrix(rnorm(M*N2,0,1),M,N2,byrow=TRUE);
+    P_t1_rec = inv.logit(logit(P_nt_rec)+lor_t1_rec);
+    P_t1_rel = inv.logit(logit(P_nt_rel)+lor_t1_rel);
+    
+    C_rec = matrix(rnorm(M*N2,1000,50),M,N2,byrow = TRUE)
+    C_rel = matrix(rnorm(M*N2,2000,100),M,N2,byrow = TRUE)
+    C_no_rec = matrix(rnorm(M*N2,2500,125),M,N2,byrow = TRUE)
+    
+    Q_rec = matrix(rnorm(M*N2,26,2),M,N2,byrow = TRUE)
+    Q_rel = matrix(rnorm(M*N2,23,3),M,N2,byrow = TRUE)
+    Q_no_rec = matrix(rnorm(M*N2,20,4),M,N2,byrow = TRUE)
+    
+    NB_nt = (lamda*(P_nt_rec*(1-P_nt_rel)*Q_rec + P_nt_rec*P_nt_rel*Q_rel
+                   +(1-P_nt_rec)*Q_no_rec)
+    - (P_nt_rec*(1-P_nt_rel)*C_rec + P_nt_rec*P_nt_rel*C_rel
+       +(1-P_nt_rec)*C_no_rec ))
+    NB_t1 = (lamda*(P_t1_rec*(1-P_t1_rel)*Q_rec + P_t1_rec*P_t1_rel*Q_rel
+                   +(1-P_t1_rec)*Q_no_rec)
+    - (C_t1 + P_t1_rec*(1-P_t1_rel)*C_rec + P_t1_rec*P_t1_rel*C_rel
+       +(1-P_t1_rec)*C_no_rec ))
+    NB_t2 = (lamda*(P_t2_rec*(1-P_t2_rel)*Q_rec + P_t2_rec*P_t2_rel*Q_rel
+                   +(1-P_t2_rec)*Q_no_rec)
+    - (C_t2 + P_t2_rec*(1-P_t2_rel)*C_rec + P_t2_rec*P_t2_rel*C_rel
+       +(1-P_t2_rec)*C_no_rec ))
+    
+    Pb = colMeans(pmax(pmax(NB_nt,NB_t1),NB_t2))
+    Pf = Pb-pmax(pmax(colMeans(NB_nt), colMeans(NB_t1)), colMeans(NB_t2))
+    if(M==2)
+    {
+      Pc = Pb-0.5*(pmax(pmax(NB_nt[1,], NB_t1[1,]),NB_t2[1,])
+                   +pmax(pmax(NB_nt[2,], NB_t1[2,]), NB_t2[2,]))
+      
+    } else {
+      Pc = Pb-0.5*(pmax(pmax(colMeans(NB_nt[1:(M/2),]), 
+                          colMeans(NB_t1[1:(M/2),])),colMeans(NB_t2[1:(M/2),]))
+                   +pmax(pmax(colMeans(NB_nt[((M/2)+1):M,]), 
+                colMeans(NB_t1[((M/2)+1):M,])), colMeans(NB_t2[((M/2)+1):M,])))
+    }
+    sum1[1] = sum1[1] + sum(Pf-Pc);
+    sum1[2] = sum1[2] + sum((Pf-Pc)^2);
+    sum1[3] = sum1[3] + sum((Pf-Pc)^3);
+    sum1[4] = sum1[4] + sum((Pf-Pc)^4);
+    sum1[5] = sum1[5] + sum(Pf);
+    sum1[6] = sum1[6] + sum(Pf^2);
+    sum1[7] = sum1[7] + M*N2;
+  }
+  return(sum1)
+}
+```
+We can use the MLMC to calculate the value:
+```{r message=FALSE }
+set.seed(666) # Set random seed to ensure the same output 
+# without this MLMC will give different output each time
+tst <- mlmc.test(EVPPI_lor2_l, M=2, N=10000,
+                 L=4, N0=10000,
+                 eps.v=c(0.5,1,2,5),
+                 Lmin=2, Lmax=10, parallel = 32)
+plot(tst,which=c("var", "mean", "Nl", "cost"),cols=2) # plot
+```
+
+The estimation of EVPPI for lor of antidepression is `r EVPI-tst$P[1]` with root Mean Square Error `r 2*tst$eps.v[1]`.
+
+# # Summary
+MLMC works well for all the calculations and starts to show the computaional savings when calculating the EVPPI for lor, i.e. involving the conditional sampling.
+
+# # Comparision with QMC
+For comparision, we set the **mean square error (MSE)** to be 0.25 ($\varepsilon=0.5$) and divide it into two parts:
+**weak error**: 0.25, **variance**: 0.1875. 
+
+We first run the **MLMC** function to achieve the required MSE, which gives the computational costs of the MLMC and standard MC. Then, by using the same number of inner samples, we do QMC on the outer samples and achieve the required variance. This kind of comparision is relatively unfair for MLMC, since other algorithm do not need to find the required number of inner samples.  
+
+```{r echo=FALSE,message=FALSE}
+require(knitr)
+mydata<- t(matrix(c(15.14,26.93,5.63,13.02,22.85,5.12,787.20,108.50,8.19),3,3))
+rownames(mydata) <-c('EVPPI_P','EVPPI_cq','EVPPI_lor1')
+kable(mydata,format='pandoc',  col.names= c('Standard MC','MLMC','QMC'), caption = 'Comparision of Computational Cost (10^6)')
+```
