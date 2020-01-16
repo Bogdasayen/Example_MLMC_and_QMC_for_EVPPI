@@ -16,7 +16,7 @@
 # At any stage, a patient can experience a stroke, clinically relevant bleed, MI, ICH, SE,
 # TIA. The last two are transient events.
 
-
+baseline.directory <- ".."
 load(file=paste(baseline.directory,"/data/bugs.objects.rda",sep=""))
 
 # Load the effect of prior events on future Ischemic strokes, TIA/SE, ICH and bleeds
