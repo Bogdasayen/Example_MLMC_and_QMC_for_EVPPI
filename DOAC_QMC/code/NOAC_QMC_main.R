@@ -49,7 +49,6 @@ cov_notreat <- cov(data_notreat)
 
 L_loghr <- chol(cov_loghr)
 L_baseline <- chol(cov_baseline)
-L_notreat <- chol(cov_notreat)
 
 cov_loghr.m <- melt(cov_loghr)
 cov_baseline.m <- melt(cov_baseline)
